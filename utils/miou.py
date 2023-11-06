@@ -6,10 +6,34 @@ from collections import OrderedDict
 import argparse
 from PIL import Image as PILImage
 from utils.transforms import transform_parsing
+from glob import glob
 
 LABELS = ['Background', 'Hat', 'Hair', 'Glove', 'Sunglasses', 'Upper-clothes', 'Dress', 'Coat', \
           'Socks', 'Pants', 'Jumpsuits', 'Scarf', 'Skirt', 'Face', 'Left-arm', 'Right-arm', 'Left-leg',
           'Right-leg', 'Left-shoe', 'Right-shoe']
+
+def get_palette_4classes():
+    palette = [0,0,0,   #Background
+            0,0,0,      #Hat
+            0,0,0,      #Hair
+            0,0,0,      #Glove
+            0,0,0,      #Sunglasses
+            0,128,0,    #Upper-clothes
+            0,0,85,     #Dress
+            0,128,0,    #Coat
+            0,0,0,      #Socks
+            128,0,0,    #Pants
+            0,0,85,     #Jumpsuits
+            0,0,0,      #Scarf
+            128,0,0,    #Skirt
+            0,0,0,      #Face
+            0,0,0,      #Left-arm
+            0,0,0,      #Right-arm
+            0,0,0,      #Left-leg
+            0,0,0,      #Right-leg
+            0,0,0,      #Left-shoe
+            0,0,0]      #Right-shoe
+    return palette
 
 def get_palette(num_cls):
     """ Returns the color map for visualizing the segmentation mask.
@@ -54,7 +78,6 @@ def get_confusion_matrix(gt_label, pred_label, num_classes):
                 confusion_matrix[i_label, i_pred_label] = label_count[cur_index]
 
     return confusion_matrix
-
 
 def compute_mean_ioU(preds, scales, centers, num_classes, datadir, input_size=[473, 473], dataset='val'):
     list_path = os.path.join(datadir, dataset + '_id.txt')
@@ -150,7 +173,71 @@ def compute_mean_ioU_file(preds_dir, num_classes, datadir, dataset='val'):
     name_value = OrderedDict(name_value)
     return name_value
 
-def write_results(preds, scales, centers, datadir, dataset, result_dir, input_size=[473, 473]):
+def make_dicmap(data):
+    # dic2clt = {'upper':2, 'bottom':1, 'dress':3}
+    # dic2clt = {'upper':3, 'bottom':5, 'dress':200} #DukeMTMC
+    dic2clt = {'upper':1, 'bottom':2, 'dress':3}     #LIP
+
+    dic_parset = {
+        'ppss': {'upper':[3], 'bottom':[4]},  
+        'LIP': {'upper':[5,7], 'bottom':[9,12], 'dress':[6,10]},  
+        'MHP_v2': {'upper':[10,11,12,13,14,15,34,57],  
+                'bottom':[17,18,19,58],  
+                'dress':[35,36,37,38]},  
+        'Duke': {'upper':[3], 'bottom':[5]},  
+        'HPD': {'upper':[4,5], 'bottom':[6], 'dress':[7]}
+        }
+
+    dic_map = {v: dic2clt[key] for key, value in dic_parset[data].items() for v in value}
+    return dic_map
+
+def compute_mean_ioU_4classes(dir_pred, dir_gt, num_classes=4, dataset='LIP', dsize=(473,473)):
+    #Step1-1. confusion_matrix 초기화
+    confusion_matrix = np.zeros((num_classes, num_classes))
+    
+    #Step1-2. mapping할 dictionary 가져오기
+    dic_map = make_dicmap(dataset)
+
+    path_pr = sorted(glob(dir_pred+'/*'))
+
+    #Step2. predict 값들을 resize해서 gt와 비교
+    for pth_pr in path_pr:
+        pred = PILImage.open(pth_pr).resize(dsize[::-1])                    #1) PILImage로 열고 resize
+        basename = os.path.basename(pth_pr)
+        gt = PILImage.open(f'{dir_gt}/{basename}').resize(dsize[::-1])
+        
+        gt2 = gt.point(lambda p: dic_map.get(p, 0))                         #2) 라벨링 값 서로 매핑
+        pred2 = pred.point(lambda p: dic_map.get(p, 0))                     
+
+        confusion_matrix += get_confusion_matrix(np.array(gt2), np.array(pred2), num_classes)   #3) np.array로 변환해서 confusion matrix 생성
+
+    pos = confusion_matrix.sum(1)
+    res = confusion_matrix.sum(0)
+    tp = np.diag(confusion_matrix)
+
+    pixel_accuracy = (tp.sum() / pos.sum()) * 100
+    mean_accuracy = ((tp / np.maximum(1.0, pos)).mean()) * 100
+    IoU_array = (tp / np.maximum(1.0, pos + res - tp))
+    IoU_array = IoU_array * 100
+    mean_IoU = IoU_array.mean()
+    print('Pixel accuracy: %f \n' % pixel_accuracy)
+    print('Mean accuracy: %f \n' % mean_accuracy)
+    print('Mean IU: %f \n' % mean_IoU)
+    name_value = []
+    
+    LIP = ['Background', 'upper', 'bottom','dress']
+                                        #LABEL
+    for i, (label, iou) in enumerate(zip(LIP, IoU_array)):
+        name_value.append((label, iou))
+
+    name_value.append(('Pixel accuracy', pixel_accuracy))
+    name_value.append(('Mean accuracy', mean_accuracy))
+    name_value.append(('Mean IU', mean_IoU))
+    name_value = OrderedDict(name_value)
+
+    return name_value
+
+def write_results_json(preds, scales, centers, datadir, dataset, result_dir, input_size=[473, 473]):
     palette = get_palette(20)
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
@@ -166,6 +253,26 @@ def write_results(preds, scales, centers, datadir, dataset, result_dir, input_si
         pred = transform_parsing(pred_out, c, s, w, h, input_size)
         #pred = pred_out
         save_path = os.path.join(result_dir, im_name[:-4]+'.png')
+
+        output_im = PILImage.fromarray(np.asarray(pred, dtype=np.uint8))
+        output_im.putpalette(palette)
+        output_im.save(save_path)
+
+'''
+총 4개의 클래스에 대해 팔레트 씌어서 저장
+'''
+def write_results_png(data_list, preds, scales, centers, result_dir, input_size=[473, 473]):
+    palette = get_palette_4classes()
+    if not os.path.exists(result_dir):
+        os.makedirs(result_dir)
+
+    for item, pred_out, s, c in zip(data_list, preds, scales, centers):
+        im_name = item['im_name']
+        w = item['img_width']
+        h = item['img_height']
+        pred = transform_parsing(pred_out, c, s, w, h, input_size)
+        #pred = pred_out
+        save_path = os.path.join(result_dir, im_name+'.png')
 
         output_im = PILImage.fromarray(np.asarray(pred, dtype=np.uint8))
         output_im.putpalette(palette)
