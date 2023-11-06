@@ -259,7 +259,7 @@ def write_results_json(preds, scales, centers, datadir, dataset, result_dir, inp
         output_im.save(save_path)
 
 '''
-총 4개의 클래스에 대해 팔레트 씌어서 저장
+총 4개의 클래스에 대해 팔레트 씌워 저장
 '''
 def write_results_png(data_list, preds, scales, centers, result_dir, input_size=[473, 473]):
     palette = get_palette_4classes()
@@ -271,7 +271,6 @@ def write_results_png(data_list, preds, scales, centers, result_dir, input_size=
         w = item['img_width']
         h = item['img_height']
         pred = transform_parsing(pred_out, c, s, w, h, input_size)
-        #pred = pred_out
         save_path = os.path.join(result_dir, im_name+'.png')
 
         output_im = PILImage.fromarray(np.asarray(pred, dtype=np.uint8))
